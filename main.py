@@ -176,4 +176,51 @@ class ChatbotAssistant:
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
         for epoch in range(epochs):
-            pass
+            running_loss = 0.0
+
+            for batch_X, batch_y in loader:
+                optimizer.zero_grad()
+                outputs = self.model(batch_X) #We see what our current state model gives out on the input
+                loss = criterion(outputs, batch_y) #And we compare it to what it should be and get the loss
+                loss.backward() #we backpropagate the error 
+                optimizer.step() #This step size depends on the lr we gave before
+                running_loss += loss
+            
+            print(f"Epoch {epoch+1}: Loss: {running_loss/len(loader)}") #we print the loss ofr each epoch
+    def save_model(self, model_path, dimensions_path):
+        torch.save(self.model.state_dict(), model_path)
+        with open(dimensions_path, "w") as f:
+            json.dump( {"input_size": self.X.shape(), "output_size": len(self.intents)}, f)
+
+    def load_model(self, model_path, dimensions_path):
+        with open(dimensions_path, "r") as f:
+            dimensions = json.loads(f)
+            self.model = ChatbotModel(dimensions["input_size"], dimensions["output_size"]) 
+            #When we load it, dimensions["input_size"] will be what we saved in save_model() as self.X.shape()
+            #and dimensions["output_size"] ehat we saved as len(self.intents)
+            self.model.load_state_dict(torch.load(model_path, weights_only=True))
+    
+    def process_message(self, input_message):
+        words = self.tokenize_and_lemmatize(input_message)
+        bag = self.bag_of_words(input_message)
+
+        bag_tensor = torch.tensor([bag], dtype=torch.float32)
+
+        self.model.eval()
+        with torch.no_grad(): #no grad cause we are not training anymore
+            predictions = self.model(bag_tensor)
+        
+        predicted_class_index = torch.argmax(predictions, dim=1) #Chooses the index with highest probability
+        predicted_intent = self.intents[predicted_class_index] #we get the intent eith the predicted index
+        
+        if self.function_mapping: #if we have functions mapped defined in the constructor
+            if predicted_intent in self.function_mapping:
+                self.function_mapping[predicted_intent]() #we call the mapped function
+        
+        if self.intents_responses[predicted_intent]:
+            return random.choice(self.intents_responses[predicted_intent]) #if we have multiple possible responses choose one ranodmly
+        else: 
+            return None #just in case I have no response, only a function mapped
+        
+
+
