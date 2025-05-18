@@ -31,6 +31,8 @@ class ChatbotModel(nn.Module):
         x = self.dropout(x)
         x = self.fc3(x) #lastly we don't use relu here cause for the output we want to use softmax
 
+        return x
+
 class ChatbotAssistant:
 
     def __init__(self, intents_path, function_mapping=None):
@@ -108,7 +110,7 @@ class ChatbotAssistant:
         """
         return [1 if word in words else 0 for word in self.vocabulary]
 
-    def parse_intents(self):
+    def parse_intents(self)-> None:
         """
         Parses the intents JSON file and extracts training data.
 
@@ -140,69 +142,138 @@ class ChatbotAssistant:
 
         self.vocabulary = sorted(set(self.vocabulary))  # Remove duplicates and sort vocabulary
     
-    def prepare_data(self):
-        """Prepares data to be used for training, stores it in self.X and self.y"""
-        bags = []
-        indices = []
+    def prepare_data(self)-> None:
+        """
+        Prepares the training data by converting documents into numerical format.
+
+        This method transforms each document into a bag-of-words vector using the instance's
+        vocabulary and maps each intent tag to its corresponding index in the intents list.
+        The resulting feature matrix (X) and label vector (y) are stored as NumPy arrays
+        in self.X and self.y, respectively.
+
+        Result:
+            self.X (np.ndarray): A matrix where each row is a binary bag-of-words vector representing a document.
+            self.y (np.ndarray): A vector of integer labels, each representing the index of the intent tag.
+        """
+        bags = []     # List to store feature vectors for each document
+        indices =     []  # List to store the intent index (class label) for each document
 
         for doc in self.documents:
-            words = doc[0]
-            bag = self.bag_of_words(words)
+            words = doc[0]  # The list of words from the input pattern
+            tag = doc[1]    # The associated intent tag
 
-            intent_index = self.intents.index(doc[1]) #the intent index is the position in the intents list where the tag is (doc[1])
-            #"What is the position in the intents of the tag from the doc?"
+            bag = self.bag_of_words(words)  # Convert words into a binary bag-of-words vector
+            intent_index = self.intents.index(tag)  # Get the index of the intent tag
 
             bags.append(bag)
             indices.append(intent_index)
 
-        self.X = np.array(bags) #X will be the matrix of all the words (coded in 1s and 0s) from the docs
-        self.y = np.array(indices) #Y will be the output vectors of the correct predictions 
+        self.X = np.array(bags)     # Feature matrix: each row represents a document
+        self.y = np.array(indices)  # Label vector: each value represents an intent class
+
     
-    def train_model(self, batch_size, lr, epochs):
-        """lr = learning rate
-        epochs = how many repetitions of the same data
-        batch_size = how many instances to process in parallel"""
-        X_tensor = torch.tensor(self.X, dtype=torch.float32) #bag representation of all the phrases
-        y_tensor = torch.tensor(self.y, dtype=torch.long) #we are using ints for the correct clasification
+    def train_model(self, batch_size: int, lr: float, epochs: int)-> None:
+        """
+        Trains the chatbot classification model using the prepared bag-of-words input and intent labels.
 
+        The model is trained using the Adam optimizer and cross-entropy loss. It learns to map
+        bag-of-words input vectors (features) to intent labels (classes) by adjusting weights
+        through backpropagation over multiple epochs.
+
+        Parameters:
+            batch_size (int): Number of samples to process simultaneously during each training step.
+            lr (float): Learning rate that controls how much the model weights are adjusted at each step.
+            epochs (int): Number of times to iterate over the entire training dataset.
+
+        Model Output:
+            self.model: A trained instance of ChatbotModel ready to make predictions.
+        """
+        # Convert training data to PyTorch tensors
+        X_tensor = torch.tensor(self.X, dtype=torch.float32)  # Input features (binary bag-of-words vectors)
+        y_tensor = torch.tensor(self.y, dtype=torch.long)     # Target labels (as integer indices)
+
+        # Wrap tensors in a dataset and loader for mini-batch processing
         dataset = TensorDataset(X_tensor, y_tensor)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)  # Shuffle for stochasticity
 
-        self.model = ChatbotModel(input_size=self.X.shape[1], output_size=len(self.intents)) #output has to be a probability for each intent, therefore we pass the legth of all lenghts to have a space for each one
-        #X.shape[0] would be the amount of bags we have, X.shape[1] is the size of an individual bag, and we know this depends 
-        #on the amount of words we have (for each word we have a 0/1)
+        # Initialize the model
+        self.model = ChatbotModel(
+            input_size=self.X.shape[1],     # Number of input features (size of vocabulary)
+            output_size=len(self.intents)   # Number of output classes (intents)
+        )
 
-        criterion = nn.CrossEntropyLoss()
+        # Define loss function and optimizer
+        criterion = nn.CrossEntropyLoss()  # Combines softmax + negative log likelihood
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
+        # Training loop over epochs
         for epoch in range(epochs):
             running_loss = 0.0
 
             for batch_X, batch_y in loader:
-                optimizer.zero_grad()
-                outputs = self.model(batch_X) #We see what our current state model gives out on the input
-                loss = criterion(outputs, batch_y) #And we compare it to what it should be and get the loss
-                loss.backward() #we backpropagate the error 
-                optimizer.step() #This step size depends on the lr we gave before
-                running_loss += loss
-            
-            print(f"Epoch {epoch+1}: Loss: {running_loss/len(loader)}") #we print the loss ofr each epoch
-    def save_model(self, model_path, dimensions_path):
-        torch.save(self.model.state_dict(), model_path)
-        with open(dimensions_path, "w") as f:
-            json.dump( {"input_size": self.X.shape(), "output_size": len(self.intents)}, f)
+                optimizer.zero_grad()               # Clear previous gradients
+                outputs = self.model(batch_X)       # Forward pass: predict class scores
+                loss = criterion(outputs, batch_y)  # Compute loss between predicted and true labels
 
+                loss.backward()  # Backward pass: compute gradients via backpropagation
+                optimizer.step() # Update model weights based on gradients and learning rate
+
+                running_loss += loss.item()  # Accumulate batch loss for monitoring
+
+            # Print average loss for the epoch
+            print(f"Epoch {epoch + 1}: Loss: {running_loss / len(loader):.4f}")
+
+
+    def save_model(self, model_path, dimensions_path):
+        """
+        Saves the trained model's weights and essential architecture dimensions.
+
+        Parameters:
+            model_path (str): File path to save the model's weights (state_dict).
+            dimensions_path (str): Path to save model input and output sizes in JSON format.
+
+        Notes:
+            - Only the model weights are saved, not the full model object.
+            - The input and output sizes are stored separately to allow proper reinitialization.
+        """
+        torch.save(self.model.state_dict(), model_path)  # Save model weights only
+
+        # Save input and output dimensions for model reconstruction
+        with open(dimensions_path, "w") as f:
+            json.dump({
+                "input_size": self.X.shape[1],       # Number of input features (vocabulary size)
+                "output_size": len(self.intents)     # Number of target classes (intents)
+            }, f)
+    
     def load_model(self, model_path, dimensions_path):
+        """
+        Loads the model architecture and previously saved weights from disk.
+
+        Parameters:
+            model_path (str): Path to the file containing the saved model weights.
+            dimensions_path (str): Path to the JSON file containing input/output sizes.
+
+        Notes:
+            - Reinitializes the model architecture using saved dimensions.
+            - Loads weights using the 'weights_only=True' flag (requires compatible PyTorch version).
+        """
         with open(dimensions_path, "r") as f:
-            dimensions = json.loads(f)
-            self.model = ChatbotModel(dimensions["input_size"], dimensions["output_size"]) 
-            #When we load it, dimensions["input_size"] will be what we saved in save_model() as self.X.shape()
-            #and dimensions["output_size"] ehat we saved as len(self.intents)
-            self.model.load_state_dict(torch.load(model_path, weights_only=True))
+            dimensions = json.load(f)
+
+        # Rebuild the model architecture
+        self.model = ChatbotModel(
+            input_size=dimensions["input_size"],
+            output_size=dimensions["output_size"]
+        )
+
+        # Load model weights using weights_only flag 
+        self.model.load_state_dict(torch.load(model_path, weights_only=True))
+        self.model.eval()  # Set model to evaluation mode (disables dropout, etc.)
+
     
     def process_message(self, input_message):
         words = self.tokenize_and_lemmatize(input_message)
-        bag = self.bag_of_words(input_message)
+        bag = self.bag_of_words(words)
 
         bag_tensor = torch.tensor([bag], dtype=torch.float32)
 
