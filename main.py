@@ -11,27 +11,40 @@ from torch.utils.data import DataLoader, TensorDataset
 # nltk.download("punkt_tab") #Only first time you run nltk
 
 class ChatbotModel(nn.Module):
-    def __init__(self, input_size, output_size): #input and output variables to make it flexible
-        """Architecture of neural network. You define an input layer size with first variabel input_size, and an output size
-        (the length of the output vector) with variable named output_size. It produces a neural network with 2 hidden layers
-        of 128 and 64 neurons"""
+    def __init__(self, input_size, output_size):
+        """
+        Defines a simple feedforward neural network for intent classification.
+
+        Parameters:
+        - input_size (int): Size of the input vector (i.e. the number of words in the vocabulary).
+        - output_size (int): Number of possible output classes (i.e. intents).
+
+        The network architecture:
+        - Input layer → 128 neurons
+        - Hidden layer → 64 neurons
+        - Output layer → output_size neurons (one per intent)
+        - ReLU activation is applied between layers to introduce non-linearity.
+        - Dropout (50%) is used after each hidden layer to reduce overfitting.
+        """
         super(ChatbotModel, self).__init__()
 
-        self.fc1 = nn.Linear(input_size, 128) #fc1 = "fully connected layer 1" i.e. first hidden layer 
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, output_size) 
-        self.relu = nn.ReLU() #activation function ReLU -> f(x)= max(0,x) meaning if x < 0, output = 0, otherwise output = x
-        #ReLu is used "to break linearity" - investigate this
-        self.dropout = nn.Dropout(0.5) #dropout = 50%
-    
+        self.fc1 = nn.Linear(input_size, 128)  # First hidden layer
+        self.fc2 = nn.Linear(128, 64)          # Second hidden layer
+        self.fc3 = nn.Linear(64, output_size)  # Output layer (raw scores for each intent)
+
+        self.relu = nn.ReLU()                  # Activation function: ReLU helps model non-linear patterns
+        self.dropout = nn.Dropout(0.5)         # Randomly drops 50% of neurons during training to prevent overfitting
+
     def forward(self, x):
-        x = self.relu(self.fc1(x)) #get x into the fc1, and then aply the relu function
-        x = self.dropout(x) #apply dropout and pass to fc 2
-        x = self.relu(self.fc2(x)) #same for fc2
-        x = self.dropout(x)
-        x = self.fc3(x) #lastly we don't use relu here cause for the output we want to use softmax
+        # Forward pass through the network
+        x = self.relu(self.fc1(x))             # Layer 1 + ReLU
+        x = self.dropout(x)                    # Dropout after first hidden layer
+        x = self.relu(self.fc2(x))             # Layer 2 + ReLU
+        x = self.dropout(x)                    # Dropout after second hidden layer
+        x = self.fc3(x)                        # Final layer (no activation; softmax applied later during loss computation)
 
         return x
+
 
 class ChatbotAssistant:
 
@@ -135,7 +148,7 @@ class ChatbotAssistant:
                 self.intents.append(intent["tag"])
                 self.intents_responses[intent["tag"]] = intent["responses"]
 
-            for pattern in intent["pattern"]:
+            for pattern in intent["patterns"]:
                 pattern_words = self.tokenize_and_lemmatize(pattern)
                 self.vocabulary.extend(pattern_words)
                 self.documents.append((pattern_words, intent["tag"]))  # Each document is (tokenized pattern, intent tag)
@@ -270,28 +283,86 @@ class ChatbotAssistant:
         self.model.load_state_dict(torch.load(model_path, weights_only=True))
         self.model.eval()  # Set model to evaluation mode (disables dropout, etc.)
 
-    
     def process_message(self, input_message):
+        """
+        Processes an input message, predicts the intent using the trained model,
+        and returns an appropriate response or executes a mapped function.
+
+        Workflow:
+            1. Tokenizes and lemmatizes the input message.
+            2. Converts the message into a bag-of-words vector.
+            3. Feeds the vector to the trained model to predict the intent.
+            4. If a function is mapped to the predicted intent, it is executed.
+            5. If responses exist for the intent, a random one is returned.
+            6. Returns None if no response is defined but a function was executed.
+
+        Parameters:
+            input_message (str): The user's message as plain text.
+
+        Returns:
+            str or None: A randomly selected response string from the intent's responses,
+                        or None if only a function was triggered.
+        """
+        # Step 1: Preprocess input (tokenize + lemmatize)
         words = self.tokenize_and_lemmatize(input_message)
+
+        # Step 2: Convert processed words into a bag-of-words vector
         bag = self.bag_of_words(words)
+        bag_tensor = torch.tensor([bag], dtype=torch.float32)  # Add batch dimension
 
-        bag_tensor = torch.tensor([bag], dtype=torch.float32)
-
-        self.model.eval()
-        with torch.no_grad(): #no grad cause we are not training anymore
+        # Step 3: Predict the intent using the trained model
+        self.model.eval()  # Ensure model is in inference mode
+        with torch.no_grad():  # Disable gradient tracking for performance and reduced side-effects
             predictions = self.model(bag_tensor)
-        
-        predicted_class_index = torch.argmax(predictions, dim=1) #Chooses the index with highest probability
-        predicted_intent = self.intents[predicted_class_index] #we get the intent eith the predicted index
-        
-        if self.function_mapping: #if we have functions mapped defined in the constructor
-            if predicted_intent in self.function_mapping:
-                self.function_mapping[predicted_intent]() #we call the mapped function
-        
-        if self.intents_responses[predicted_intent]:
-            return random.choice(self.intents_responses[predicted_intent]) #if we have multiple possible responses choose one ranodmly
-        else: 
-            return None #just in case I have no response, only a function mapped
-        
 
+        # Step 4: Select the intent with the highest predicted probability
+        predicted_class_index = torch.argmax(predictions, dim=1).item()
+        predicted_intent = self.intents[predicted_class_index]
+
+        # Step 5: If a function is mapped to this intent, execute it
+        if self.function_mapping and predicted_intent in self.function_mapping:
+            self.function_mapping[predicted_intent]()
+
+        # Step 6: If responses are available, return a random one
+        if self.intents_responses.get(predicted_intent):
+            return random.choice(self.intents_responses[predicted_intent])
+        else:
+            return None  # No response defined, possibly only a function was run
+
+    
+def get_stocks(): #dummy function to test function_mapping
+    stocks = ["BABA", "PYPL", "PDD", "MRNA", "GOOGL"]
+    print(stocks)
+
+if __name__ == "__main__":
+    # Initialize the assistant with a mapping of intents to functions
+    # (Note: 'get_stocks' is passed without parentheses to avoid calling it immediately)
+    assistant = ChatbotAssistant("intents.json", function_mapping={"stocks": get_stocks})
+
+    # Load and parse the intents file to access responses and tags
+    assistant.parse_intents()
+
+    # ----------------------------------------------------------------------
+    # First-time setup: train and save the model
+    # Uncomment this section only if you haven't trained/saved a model yet.
+    # ----------------------------------------------------------------------
+    # assistant.prepare_data()
+    # assistant.train_model(batch_size=8, lr=0.001, epochs=100)
+    # assistant.save_model(model_path="chatbot_model.pth", dimensions_path="dimensions.json")
+
+    # ----------------------------------------------------------------------
+    # Load an existing trained model to use it directly
+    # ----------------------------------------------------------------------
+    assistant.load_model("chatbot_model.pth", "dimensions.json")
+
+    # Start the interactive message loop
+    while True:
+        message = input("What is your message? ")
+
+        if message.lower() == "quit":  # Use 'quit' to exit the chat
+            print("Goodbye!")
+            break
+
+        response = assistant.process_message(message)
+        print(response)
 
